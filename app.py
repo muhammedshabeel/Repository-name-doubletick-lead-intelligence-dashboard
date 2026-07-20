@@ -195,9 +195,14 @@ def message_time(message):
 
 
 def origin_ad(messages):
+    """Return the earliest customer ad message, prioritising a real ad ID."""
     ads = [m for m in messages if isinstance(m, dict) and is_ad(m)]
+    if not ads:
+        return None
     incoming_ads = [m for m in ads if incoming(m)]
-    return min(incoming_ads or ads, key=message_time) if ads else None
+    candidates = incoming_ads or ads
+    with_id = [m for m in candidates if pick(m, ["source_id", "sourceId", "ad_id", "adId"])]
+    return min(with_id or candidates, key=message_time)
 
 
 def fetch_chat(phone, waba, start, end, api_key):
@@ -206,7 +211,7 @@ def fetch_chat(phone, waba, start, end, api_key):
     if not phone.startswith("+"):
         formats.append("+" + phone)
     for phone_format in formats:
-        for attempt in range(2):
+        for attempt in range(4):
             try:
                 response = http_session(api_key).get(
                     DOUBLETICK_URL,
@@ -216,12 +221,12 @@ def fetch_chat(phone, waba, start, end, api_key):
                         "startDate": start,
                         "endDate": end,
                     },
-                    timeout=(5, 20),
+                    timeout=(10, 60),
                 )
                 if response.status_code in (429, 500, 502, 503, 504):
                     last_error = f"HTTP {response.status_code}"
-                    if attempt == 0:
-                        time.sleep(1.5)
+                    if attempt < 3:
+                        time.sleep(min(2 ** (attempt + 1), 20))
                         continue
                 response.raise_for_status()
                 messages = extract_messages(response.json() if response.text.strip() else {})
@@ -230,8 +235,8 @@ def fetch_chat(phone, waba, start, end, api_key):
                 break
             except requests.RequestException as exc:
                 last_error = str(exc)
-                if attempt == 0:
-                    time.sleep(1)
+                if attempt < 3:
+                    time.sleep(min(2 ** (attempt + 1), 20))
     return [], "", last_error
 
 
@@ -385,7 +390,7 @@ with st.sidebar:
     meta_token = st.text_input("Meta access token", value=secret_or_env("META_ACCESS_TOKEN"), type="password")
     start_date = st.date_input("Start date", value=date.today() - timedelta(days=1))
     end_date = st.date_input("End date", value=date.today())
-    workers = st.slider("Parallel workers", 5, 40, 25)
+    workers = st.slider("Parallel workers", 4, 20, 8)
 
 customer_file = st.file_uploader("Upload DoubleTick customer report", type=["xlsx", "xls", "csv"])
 st.info(
@@ -449,6 +454,29 @@ if st.button("Generate report", type="primary", use_container_width=True):
                         "ctwa_clid": "", "status": "API_ERROR", "error": str(exc),
                     })
                 progress.progress(index / len(valid_phones), text=f"Fetched {index:,} of {len(valid_phones):,} phones")
+
+    # Accuracy recovery pass: retry only phones that had no chat or an API error.
+    retry_phones = [
+        row["customer_phone"] for row in rows
+        if row.get("status") in {"NO_CHAT_FOUND", "API_ERROR"}
+    ]
+    if retry_phones:
+        progress.progress(0, text=f"Accuracy retry for {len(retry_phones):,} phones...")
+        recovered = {}
+        with ThreadPoolExecutor(max_workers=min(4, workers)) as pool:
+            futures = {pool.submit(process_phone, phone, wabas, api_start, api_end, api_key): phone for phone in retry_phones}
+            for index, future in enumerate(as_completed(futures), 1):
+                phone = futures[future]
+                try:
+                    recovered[phone] = future.result()
+                except Exception as exc:
+                    recovered[phone] = {
+                        "customer_phone": phone, "waba_number": "", "phone_format_used": "", "messages_found": 0,
+                        "ad_id": "", "campaign_id": "", "adset_id": "", "headline": "", "source_url": "",
+                        "ctwa_clid": "", "status": "API_ERROR", "error": str(exc),
+                    }
+                progress.progress(index / len(retry_phones), text=f"Retried {index:,} of {len(retry_phones):,} phones")
+        rows = [recovered.get(row["customer_phone"], row) for row in rows]
 
     result = pd.DataFrame(rows)
     if result.empty:
