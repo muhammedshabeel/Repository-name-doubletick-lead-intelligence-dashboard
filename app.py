@@ -1,7 +1,6 @@
 import io, json, os, re, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta
-from pathlib import Path
+from datetime import date, timedelta
 
 import pandas as pd
 import requests
@@ -23,6 +22,7 @@ PRODUCT_VENDOR = {
     "DOE COLLECTION":"SCENT PASSION", "ESENCIA FLORAL COLLECTION":"SCENT PASSION",
     "CLIVE COLLECTION":"SCENT PASSION", "AMEERAT AL ARAB":"SCENT PASSION",
 }
+
 ALIASES = {
     "ARBE PURO COMBO":["ARBE PURO", "ARBEPURO"],
     "PREMIUM EDITION":["PREMIUM"],
@@ -32,11 +32,34 @@ ALIASES = {
     "DOE COLLECTION":["DOE"], "ESENCIA FLORAL COLLECTION":["ESENCIA"],
     "CLIVE COLLECTION":["CLIVE"], "AMEERAT AL ARAB":["AMEERAT"],
 }
+
 COUNTRY_ALIASES = {
     "UAE":["UAE", "DUBAI", "ABU DHABI", "EMIRATES"],
     "QATAR":["QATAR", "DOHA", "QAR"],
     "KSA":["KSA", "SAUDI", "RIYADH", "JEDDAH", "SAR"],
     "BAHRAIN":["BAHRAIN", "MANAMA", "BHD"],
+}
+
+AGENT_PHONE_NAME = {
+    "919847941618": "Moinudeen",
+    "918590170256": "SHAMNA NAJIYA",
+    "917736348315": "NIHAD",
+    "919567347417": "JAHID",
+    "918156901941": "ADNAN",
+    "918606068725": "COMPLAINT",
+    "918590227968": "Reshmi Emarath",
+    "918089262612": "Ansar Emarath",
+    "919995033387": "EMARATH GLOBAL",
+    "918606827458": "ANSHAD EMARATH",
+    "917306124502": "FATHIMA LIYA",
+    "919526016837": "SHIBIL",
+    "917907978372": "NAFIH",
+    "917510767713": "Hasna",
+    "918593978664": "RANJITH",
+    "917356565921": "RAHIYAD",
+    "916238427287": "SHIHAD",
+    "918714661951": "ADWAITHA T M",
+    "918891890464": "NEHA P",
 }
 
 def digits(value):
@@ -49,7 +72,8 @@ def norm(value):
 def session(api_key):
     key = f"session_{hash(api_key)}"
     if not hasattr(LOCAL, key):
-        s = requests.Session(); s.headers.update({"Authorization": api_key, "Accept":"application/json"})
+        s = requests.Session()
+        s.headers.update({"Authorization": api_key, "Accept":"application/json"})
         setattr(LOCAL, key, s)
     return getattr(LOCAL, key)
 
@@ -86,14 +110,14 @@ def fetch(phone,waba,start,end,api_key):
         for attempt in range(4):
             try:
                 r=session(api_key).get(URL,params={"wabaNumber":waba,"customerNumber":phone_format,"startDate":start,"endDate":end},timeout=60)
-                if r.status_code in (429,500,502,503,504): time.sleep(min(2**(attempt+1),20)); continue
+                if r.status_code in (429,500,502,503,504):
+                    time.sleep(min(2**(attempt+1),20)); continue
                 r.raise_for_status(); messages=extract_messages(r.json() if r.text.strip() else {})
                 if messages: return messages,phone_format,""
                 break
             except Exception as exc:
                 last_error=str(exc)
-                if attempt<3: time.sleep(min(2**(attempt+1),20)
-                )
+                if attempt<3: time.sleep(min(2**(attempt+1),20))
     return [],"",last_error
 
 def is_ad(message):
@@ -191,10 +215,8 @@ def build_excel(df):
     return out.getvalue()
 
 def secret_or_env(name, default=""):
-    try:
-        return st.secrets[name]
-    except Exception:
-        return os.getenv(name, default)
+    try: return st.secrets[name]
+    except Exception: return os.getenv(name, default)
 
 st.set_page_config(page_title="DoubleTick Lead Intelligence",page_icon="📊",layout="wide")
 st.title("DoubleTick Lead Intelligence")
@@ -209,30 +231,25 @@ with st.sidebar:
     end_date=st.date_input("End date",value=date.today())
     workers=st.slider("Parallel workers",2,20,8)
 
-c1,c2=st.columns(2)
-with c1:
-    customer_file=st.file_uploader("1. Upload DoubleTick customer report",type=["xlsx","xls","csv"])
-with c2:
-    agent_file=st.file_uploader("2. Upload agent phone-name mapping",type=["xlsx","xls","csv"])
-
-st.info("The app ignores the unreliable agent-name field. It reads the assigned agent phone from the customer report, then maps that number to the correct name from the uploaded agent mapping file.")
+customer_file=st.file_uploader("Upload DoubleTick customer report",type=["xlsx","xls","csv"])
+st.info(f"Agent names are built into the app and matched only by assigned-agent phone number. The unreliable agent-name field in the customer report is ignored. {len(AGENT_PHONE_NAME)} agents are configured.")
 
 if st.button("Generate report",type="primary",use_container_width=True):
-    if not customer_file or not agent_file: st.error("Upload both files."); st.stop()
+    if not customer_file: st.error("Upload the DoubleTick customer report."); st.stop()
     if not api_key: st.error("DoubleTick API key is required."); st.stop()
     if end_date < start_date: st.error("End date cannot be before start date."); st.stop()
-    customer_df=read_table(customer_file); agent_df=read_table(agent_file)
+    customer_df=read_table(customer_file)
     customer_phone_col=detect_column(customer_df,["customer phone","customer number","phone number","mobile","phone"])
     assigned_phone_col=detect_column(customer_df,["assigned user number","assigned agent phone","agent phone","assigned phone","team member phone"])
-    agent_phone_col=detect_column(agent_df,["agent phone","phone number","mobile","phone"])
-    agent_name_col=detect_column(agent_df,["agent name","name","employee name","user name"])
-    missing=[name for name,col in (("customer phone",customer_phone_col),("assigned agent phone",assigned_phone_col),("agent mapping phone",agent_phone_col),("agent mapping name",agent_name_col)) if not col]
+    missing=[name for name,col in (("customer phone",customer_phone_col),("assigned agent phone",assigned_phone_col)) if not col]
     if missing:
-        st.error("Could not detect: "+", ".join(missing)+". Rename those columns clearly and retry."); st.write("Customer columns:",list(customer_df.columns)); st.write("Agent columns:",list(agent_df.columns)); st.stop()
-    customer_df=customer_df.copy(); customer_df["customer_phone"]=customer_df[customer_phone_col].map(digits); customer_df["assigned_agent_phone"]=customer_df[assigned_phone_col].map(digits)
+        st.error("Could not detect: "+", ".join(missing)+". Rename those columns clearly and retry.")
+        st.write("Customer columns:",list(customer_df.columns)); st.stop()
+    customer_df=customer_df.copy()
+    customer_df["customer_phone"]=customer_df[customer_phone_col].map(digits)
+    customer_df["assigned_agent_phone"]=customer_df[assigned_phone_col].map(digits)
     customer_df=customer_df[customer_df["customer_phone"].ne("")].drop_duplicates("customer_phone",keep="first")
-    agent_map={digits(p):str(n).strip() for p,n in zip(agent_df[agent_phone_col],agent_df[agent_name_col]) if digits(p)}
-    customer_df["assigned_agent_name"]=customer_df["assigned_agent_phone"].map(agent_map).fillna("UNMATCHED AGENT")
+    customer_df["assigned_agent_name"]=customer_df["assigned_agent_phone"].map(AGENT_PHONE_NAME).fillna("UNMATCHED AGENT")
     phones=customer_df["customer_phone"].tolist(); wabas=[digits(x) for x in waba_text.split(",") if digits(x)]
     api_start=start_date.strftime("%d-%m-%Y"); api_end=(end_date+timedelta(days=1)).strftime("%d-%m-%Y")
     progress=st.progress(0,text="Fetching DoubleTick chats..."); rows=[]
