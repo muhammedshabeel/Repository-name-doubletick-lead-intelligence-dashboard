@@ -1,0 +1,28 @@
+name: Apply UAE default country rule
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/fix-country-default.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  update-country-rule:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update country inference
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("app.py")
+          text = path.read_text()
+
