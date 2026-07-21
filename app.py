@@ -292,20 +292,11 @@ def infer_product(text):
     return "UNMATCHED"
 
 
-def infer_country(text, phone=""):
+def infer_country(text):
     cleaned = norm(text)
     for country, terms in COUNTRY_ALIASES.items():
         if any(norm(term) in cleaned for term in terms):
             return country
-    number = digits(phone)
-    if number.startswith("971"):
-        return "UAE"
-    if number.startswith("974"):
-        return "QATAR"
-    if number.startswith("966"):
-        return "KSA"
-    if number.startswith("973"):
-        return "BAHRAIN"
     return "UAE"
 
 
@@ -417,10 +408,10 @@ if st.button("Generate report", type="primary", use_container_width=True):
 
     final = working.merge(result, on="customer_phone", how="left")
     final.loc[~valid_mask, "status"] = "INVALID_CUSTOMER_PHONE"
-    source_text = final[["meta_campaign_name", "meta_adset_name", "meta_ad_name", "headline"]].fillna("").agg(" | ".join, axis=1)
-    final["product"] = source_text.map(infer_product)
+    campaign_text = final["meta_campaign_name"].fillna("")
+    final["product"] = campaign_text.map(infer_product)
     final["vendor"] = final["product"].map(PRODUCT_VENDOR).fillna("UNMATCHED")
-    final["country"] = [infer_country(text, phone) for text, phone in zip(source_text, final["customer_phone"])]
+    final["country"] = campaign_text.map(infer_country)
     final["agent_match_status"] = final["assigned_agent_name"].eq("UNMATCHED AGENT").map({True: "UNMATCHED", False: "MATCHED BY PHONE"})
 
     chats_found_unique = int(result["messages_found"].fillna(0).gt(0).sum())
