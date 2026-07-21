@@ -1,0 +1,160 @@
+name: Apply country vendor product mapping
+
+on:
+  push:
+    paths:
+      - ".github/workflows/apply-country-vendor-mapping.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update app.py mapping logic
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("app.py")
+          text = path.read_text()
+
+          product_vendor = '''PRODUCT_VENDOR = {
+              "AL HUDA": "OUD AL SALAM",
+              "PREMIUM EDITION": "OUD AL SALAM",
+              "LUMINUX": "OUD AL SALAM",
+              "DOE": "SCENT PASSION",
+              "CLIVE": "SCENT PASSION",
+              "AMEERATH": "SCENT PASSION",
+              "OUD LOVERS": "LPG",
+          }'''
+
+          aliases = '''ALIASES = {
+              "AL HUDA": ["ALHUDA", "AL-HUDA", "HUDA"],
+              "PREMIUM EDITION": ["PREMIUM"],
+              "LUMINUX": ["LUMINUX"],
+              "DOE": ["DOE COLLECTION"],
+              "CLIVE": ["CLIVE COLLECTION"],
+              "AMEERATH": ["AMEERAT", "AMEERAT AL ARAB", "AMEERATH AL ARAB"],
+              "OUD LOVERS": ["OUD LOVER", "OUDLOVERS", "OUDLOVER"],
+          }'''
+
+          text, count = re.subn(
+              r'PRODUCT_VENDOR = \{.*?\n\}\n\nALIASES = \{.*?\n\}',
+              product_vendor + "\n\n" + aliases,
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit("Could not replace PRODUCT_VENDOR and ALIASES")
+
+          functions = '''def infer_country(text):
+              cleaned = norm(text)
+              if "BAHRAIN" in cleaned:
+                  return "BAHRAIN"
+              if "KSA" in cleaned or "SAUDI" in cleaned:
+                  return "KSA"
+              if "QATAR" in cleaned:
+                  return "QATAR"
+              if "UAE" in cleaned:
+                  return "UAE"
+              return "UAE"
+
+
+          def infer_product(text, country):
+              cleaned = norm(text)
+              allowed_products = {
+                  "UAE": {"AL HUDA", "PREMIUM EDITION", "LUMINUX", "DOE", "CLIVE", "AMEERATH"},
+                  "BAHRAIN": {"DOE", "CLIVE", "AMEERATH", "OUD LOVERS"},
+                  "KSA": set(),
+                  "QATAR": set(),
+              }
+              for product in sorted(allowed_products.get(country, set()), key=len, reverse=True):
+                  terms = [product] + ALIASES.get(product, [])
+                  if any(norm(term) in cleaned for term in terms):
+                      return product
+              return "UNMATCHED"'''
+
+          text, count = re.subn(
+              r'def infer_product\(text\):.*?return "UAE"',
+              functions,
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit("Could not replace infer functions")
+
+          old_processing = '''    campaign_text = final["meta_campaign_name"].fillna("")
+              final["product"] = campaign_text.map(infer_product)
+              final["vendor"] = final["product"].map(PRODUCT_VENDOR).fillna("UNMATCHED")
+              final["country"] = campaign_text.map(infer_country)'''
+
+          new_processing = '''    campaign_text = final["meta_campaign_name"].fillna("")
+              final["country"] = campaign_text.map(infer_country)
+              final["product"] = [
+                  infer_product(campaign, country)
+                  for campaign, country in zip(campaign_text, final["country"])
+              ]
+              final["vendor"] = final["product"].map(PRODUCT_VENDOR).fillna("UNMATCHED")'''
+
+          if old_processing not in text:
+              raise SystemExit("Could not find campaign processing block")
+          text = text.replace(old_processing, new_processing, 1)
+
+          old_tab = '''    with tabs[1]:
+              st.dataframe(df.groupby(["country", "vendor"]).size().reset_index(name="lead_rows").sort_values("lead_rows", ascending=False), use_container_width=True, hide_index=True)'''
+
+          new_tab = '''    with tabs[1]:
+              country_vendor_product = (
+                  df.groupby(["country", "vendor", "product"], dropna=False)
+                  .size()
+                  .reset_index(name="lead_rows")
+              )
+              country_vendor_product["vendor"] = (
+                  country_vendor_product["vendor"].astype(str)
+                  + " ("
+                  + country_vendor_product["product"].astype(str)
+                  + ")"
+              )
+              st.dataframe(
+                  country_vendor_product[["country", "vendor", "lead_rows"]]
+                  .sort_values("lead_rows", ascending=False),
+                  use_container_width=True,
+                  hide_index=True,
+              )'''
+
+          if old_tab in text:
+              text = text.replace(old_tab, new_tab, 1)
+
+          excel_old = '        df.groupby(["country", "vendor"], dropna=False).size().reset_index(name="lead_rows").to_excel(writer, sheet_name="Country_Vendor", index=False)'
+          excel_new = '''        df.groupby(["country", "vendor"], dropna=False).size().reset_index(name="lead_rows").to_excel(writer, sheet_name="Country_Vendor", index=False)
+              df.groupby(["country", "vendor", "product"], dropna=False).size().reset_index(name="lead_rows").to_excel(writer, sheet_name="Country_Vendor_Product", index=False)'''
+          if excel_old in text and 'sheet_name="Country_Vendor_Product"' not in text:
+              text = text.replace(excel_old, excel_new, 1)
+
+          path.write_text(text)
+          PY
+
+      - name: Validate Python
+        run: python -m py_compile app.py
+
+      - name: Commit updated app.py
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py
+          if git diff --cached --quiet; then
+            echo "No changes needed"
+          else
+            git commit -m "Apply campaign country vendor product rules"
+            git push
+          fi
