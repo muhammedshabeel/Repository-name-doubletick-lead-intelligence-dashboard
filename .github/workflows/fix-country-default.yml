@@ -1,4 +1,4 @@
-name: Apply UAE default country rule
+name: Apply campaign-only lead mapping
 
 on:
   push:
@@ -10,19 +10,18 @@ permissions:
   contents: write
 
 jobs:
-  update-country-rule:
+  apply-mapping-fix:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
 
-      - name: Update country inference
+      - name: Update campaign mapping logic
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
           path = Path("app.py")
-          text = path.read_text()
-
+          text = path.read_text
